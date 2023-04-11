@@ -1,144 +1,256 @@
+from typing import Optional
+import math
+import warnings
+
 import torch
+
+# functional interface
 
 
 def optimizer(
+    optimizer_: str,
     params,
     lr: float,
-    _optimizer: str = 'sgd',
     **kwargs,
 ) -> torch.optim.Optimizer:
-    if _optimizer == 'sgd':
+    if optimizer_ == 'sgd':
         return torch.optim.SGD(params, lr=lr, **kwargs)
-    if _optimizer == 'adam':
+    if optimizer_ == 'adam':
         return torch.optim.Adam(params, lr=lr, **kwargs)
-    raise ValueError(f"'{_optimizer}' optimizer is not supported")
+    raise ValueError(f"'{optimizer_}' optimizer is not supported")
 
 
 def lr_scheduler(
+    lr_scheduler_: str,
     optimizer: torch.optim.Optimizer,
-    _lr_scheduler: str = 'annealing',
+    annealing: str,
     **kwargs,
-) -> torch.optim.lr_scheduler._LRScheduler:
-    if _lr_scheduler == 'annealing':
-        return AnnealingLR(optimizer, **kwargs)
-    raise ValueError(f"'{_lr_scheduler}' lr scheduler is not supported")
+) -> torch.optim.lr_scheduler.LRScheduler:
+    if lr_scheduler_ == 'warmup':
+        return AnnealingWithWarmup(optimizer, annealing, **kwargs)
+    if lr_scheduler_ == 'warm_restarts':
+        return AnnealingWithWarmRestarts(optimizer, annealing, **kwargs)
+    raise ValueError(f"'{lr_scheduler}' lr scheduler is not supported")
 
 
-def annealing_lr(
-    learning_rate,
-    anneal_lr,
-    lr_decay_rate,
-    lr_min_factor,
-    cur_epoch,
-    total_epochs,
-    decay_epochs=None,  # unused for now
-    warmup_lr=0,
-    warmup_epochs=0,
+def annealing_with_warm_restarts(
+    annealing: str,
+    T_curr: float,
+    T_i: int,
+    eta_min: float,
+    eta_max: float,
+    gamma: Optional[float] = None,
 ):
-    """
-    Decays the learning rate
-    :param learning_rate: float Current learning rate
-    :param anneal_lr: str Specifies the learning rate annealing. Must be one of "none", "linear" or "cosine"
-    :param lr_decay_rate: float Rate of cosine decay.
-    :param lr_min_factor: float Minimal learning rate of linear decay.
-    :param cur_epoch: int Current epoch
-    :param total_epochs: int Total number of epochs
-    :param decay_epochs: int Number of decay epochs (unused)
-    :param warmup_epochs: int Number of epochs for linearly warming up the learning rate
-    :param warmup_lr: float Starting learning rate to warm up from.
-    :return: float New learning rate
-    """
-    anneal_epochs = total_epochs - warmup_epochs
-    if cur_epoch < warmup_epochs:
-        lr = warmup_lr + (learning_rate - warmup_lr) * cur_epoch / warmup_epochs
+    if annealing == 'none':
+        return eta_max
+    if annealing == 'linear':
+        return eta_min + (eta_max - eta_min) * (1 - T_curr / T_i)
+    if annealing == 'exponential':
+        return max(eta_min, eta_max * gamma**T_curr)
+    if annealing == 'cosine':
+        return eta_min + (eta_max -
+                          eta_min) * (1 + math.cos(math.pi * T_curr / T_i)) / 2
     else:
-        cur_epoch = cur_epoch - warmup_epochs
-        if anneal_lr == "none":
-            lr = learning_rate
-        elif anneal_lr == "linear":
-            lr = learning_rate * max(lr_min_factor, 1 - cur_epoch / anneal_epochs)
-        elif anneal_lr == "cosine":
-            eta_min = 0
-            lr = (
-                eta_min
-                + (learning_rate - eta_min)
-                * (1 + np.cos(np.pi * cur_epoch / anneal_epochs))
-                / 2
-            )
-        else:
-            raise RuntimeError(f"Unknown learning rate annealing “{anneal_lr = }”")
-
-    return lr
+        raise ValueError(f"'{annealing}' annealing is not supported")
 
 
-class AnnealingLR(torch.optim.lr_scheduler._LRScheduler):
-    r"""Set the learning rate of each parameter group using a cosine annealing
-    schedule, where :math:`\eta_{max}` is set to the initial lr and
-    :math:`T_{cur}` is the number of epochs since the last restart in SGDR:
+def annealing_with_warm_up(
+    annealing: str,
+    T_curr: float,
+    T_max: int,
+    eta_min: float,
+    eta_max: float,
+    gamma: Optional[float] = None,
+    T_warmup: int = 0,
+    eta_warmup: Optional[float] = None,
+):
+    if T_curr < T_warmup:
+        if eta_warmup is None:
+            eta_warmup = eta_max
+        return eta_warmup + (eta_max - eta_warmup) * T_curr / T_warmup
+    T_curr -= T_warmup
+    T_max -= T_warmup
+    if annealing == 'none':
+        return eta_max
+    if annealing == 'linear':
+        return eta_min + (eta_max - eta_min) * (1 - T_curr / T_max)
+    if annealing == 'exponential':
+        return max(eta_min, eta_max * gamma**T_curr)
+    if annealing == 'cosine':
+        return eta_min + (eta_max - eta_min) * (
+            1 + math.cos(math.pi * T_curr / T_max)) / 2
+    raise ValueError(f"'{annealing}' annealing is not supported")
 
-    .. math::
-        \begin{aligned}
-            \eta_t & = \eta_{min} + \frac{1}{2}(\eta_{max} - \eta_{min})\left(1
-            + \cos\left(\frac{T_{cur}}{T_{max}}\pi\right)\right),
-            & T_{cur} \neq (2k+1)T_{max}; \\
-            \eta_{t+1} & = \eta_{t} + \frac{1}{2}(\eta_{max} - \eta_{min})
-            \left(1 - \cos\left(\frac{1}{T_{max}}\pi\right)\right),
-            & T_{cur} = (2k+1)T_{max}.
-        \end{aligned}
 
-    When last_epoch=-1, sets initial lr as lr. Notice that because the schedule
-    is defined recursively, the learning rate can be simultaneously modified
-    outside this scheduler by other operators. If the learning rate is set
-    solely by this scheduler, the learning rate at each step becomes:
+# torch.nn.Module interface
 
-    .. math::
-        \eta_t = \eta_{min} + \frac{1}{2}(\eta_{max} - \eta_{min})\left(1 +
-        \cos\left(\frac{T_{cur}}{T_{max}}\pi\right)\right)
 
-    It has been proposed in
-    `SGDR: Stochastic Gradient Descent with Warm Restarts`_. Note that this only
-    implements the cosine annealing part of SGDR, and not the restarts.
+class _enable_get_lr_call:
 
-    Args:
-        optimizer (Optimizer): Wrapped optimizer.
-        T_max (int): Maximum number of iterations.
-        eta_min (float): Minimum learning rate. Default: 0.
-        last_epoch (int): The index of last epoch. Default: -1.
-        verbose (bool): If ``True``, prints a message to stdout for
-            each update. Default: ``False``.
+    def __init__(self, o):
+        self.o = o
 
-    .. _SGDR\: Stochastic Gradient Descent with Warm Restarts:
-        https://arxiv.org/abs/1608.03983
-    """
+    def __enter__(self):
+        self.o._get_lr_called_within_step = True
+        return self
 
-    def __init__(self, optimizer, T_max, eta_min=0, last_epoch=-1, verbose=False):
+    def __exit__(self, type, value, traceback):
+        self.o._get_lr_called_within_step = False
+        return self
+
+
+class AnnealingWithWarmup(torch.optim.lr_scheduler.LRScheduler):
+
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        annealing: str,
+        T_max: int,
+        eta_min: float = 0,
+        T_warmup: int = 0,
+        eta_warmup: Optional[float] = None,
+        last_epoch: int = -1,
+        verbose=False,
+    ) -> None:
+        self.annealing = annealing
         self.T_max = T_max
         self.eta_min = eta_min
-        super(CosineAnnealingLR, self).__init__(optimizer, last_epoch, verbose)
+        self.T_curr = last_epoch
+        self.T_warmup = T_warmup
+        self.eta_warmup = eta_warmup
+        super().__init__(optimizer, last_epoch, verbose)
 
     def get_lr(self):
         if not self._get_lr_called_within_step:
-            warnings.warn("To get the last learning rate computed by the scheduler, "
-                          "please use `get_last_lr()`.", UserWarning)
+            warnings.warn(
+                "To get the last learning rate computed by the scheduler, "
+                "please use `get_last_lr()`.", UserWarning)
 
-        if self.last_epoch == 0:
-            return [group['lr'] for group in self.optimizer.param_groups]
-        elif self._step_count == 1 and self.last_epoch > 0:
-            return [self.eta_min + (base_lr - self.eta_min) *
-                    (1 + math.cos((self.last_epoch) * math.pi / self.T_max)) / 2
-                    for base_lr, group in
-                    zip(self.base_lrs, self.optimizer.param_groups)]
-        elif (self.last_epoch - 1 - self.T_max) % (2 * self.T_max) == 0:
-            return [group['lr'] + (base_lr - self.eta_min) *
-                    (1 - math.cos(math.pi / self.T_max)) / 2
-                    for base_lr, group in
-                    zip(self.base_lrs, self.optimizer.param_groups)]
-        return [(1 + math.cos(math.pi * self.last_epoch / self.T_max)) /
-                (1 + math.cos(math.pi * (self.last_epoch - 1) / self.T_max)) *
-                (group['lr'] - self.eta_min) + self.eta_min
-                for group in self.optimizer.param_groups]
+        return [
+            annealing_with_warm_up(
+                self.annealing,
+                self.T_curr,
+                self.T_max,
+                self.eta_min,
+                base_lr,
+                T_warmup=self.T_warmup,
+                eta_warmup=self.eta_warmup,
+            ) for base_lr in self.base_lrs
+        ]
 
-    def _get_closed_form_lr(self):
-        return [self.eta_min + (base_lr - self.eta_min) *
-                (1 + math.cos(math.pi * self.last_epoch / self.T_max)) / 2
-                for base_lr in self.base_lrs]
+    def step(
+        self,
+        epoch: Optional[float] = None,
+        param_group: Optional[int] = None,
+    ) -> None:
+        if epoch is None:
+            epoch = self.last_epoch + 1
+            self.T_curr += 1
+        else:
+            if epoch < 0:
+                raise ValueError(
+                    "expected non-negative epoch, but got {}".format(epoch))
+            self.T_curr = epoch
+        self.last_epoch = math.floor(epoch)
+        with _enable_get_lr_call(self):
+            for i, data in enumerate(
+                    zip(
+                        self.optimizer.param_groups,
+                        self.get_lr(),
+                    )):
+                if (param_group is not None) and (i != param_group):
+                    continue
+                group, lr = data
+                group['lr'] = lr
+                self.print_lr(self.verbose, i, lr, epoch)
+        self._last_lr = [group['lr'] for group in self.optimizer.param_groups]
+
+
+class AnnealingWithWarmRestarts(torch.optim.lr_scheduler.LRScheduler):
+
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        annealing: str,
+        T_0: int,
+        T_mult: int = 1,
+        eta_min: float = 0,
+        last_epoch: int = -1,
+        verbose: bool = False,
+    ):
+        if T_0 <= 0 or not isinstance(T_0, int):
+            raise ValueError(f"expected positive integer, but got {T_0}")
+        if T_mult < 1 or not isinstance(T_mult, int):
+            raise ValueError(
+                f"expected integer no less than 1, but got {T_mult}")
+        self.annealing = annealing
+        self.T_0 = T_0
+        self.T_i = T_0
+        self.T_mult = T_mult
+        self.eta_min = eta_min
+        self.T_curr = last_epoch
+        super().__init__(optimizer, last_epoch, verbose)
+
+    def get_lr(self):
+        if not self._get_lr_called_within_step:
+            warnings.warn(
+                "To get the last learning rate computed by the scheduler, "
+                "please use `get_last_lr()`.", UserWarning)
+        return [
+            annealing_with_warm_restarts(
+                self.annealing,
+                self.T_curr,
+                self.T_i,
+                self.eta_min,
+                base_lr,
+            ) for base_lr in self.base_lrs
+        ]
+
+    def step(
+        self,
+        epoch: Optional[float] = None,
+        param_group: Optional[int] = None,
+    ) -> None:
+
+        if epoch is None and self.last_epoch == -1:
+            epoch = 0
+
+        if epoch is None:
+            epoch = self.last_epoch + 1
+            self.T_curr += 1
+            if self.T_curr >= self.T_i:
+                self.T_curr = self.T_curr - self.T_i
+                self.T_i = self.T_i * self.T_mult
+        else:
+            if epoch < 0:
+                raise ValueError(
+                    "expected non-negative epoch, but got {}".format(epoch))
+            if epoch >= self.T_0:
+                if self.T_mult == 1:
+                    self.T_i = self.T_0
+                    self.T_curr = epoch % self.T_0
+                else:
+                    n = int(
+                        math.log(
+                            (epoch / self.T_0 * (self.T_mult - 1) + 1),
+                            self.T_mult,
+                        ))
+                    self.T_i = self.T_0 * self.T_mult**n
+                    self.T_curr = epoch - (self.T_i - self.T_0) / (self.T_mult -
+                                                                   1)
+            else:
+                self.T_i = self.T_0
+                self.T_curr = epoch
+        self.last_epoch = math.floor(epoch)
+        with _enable_get_lr_call(self):
+            for i, data in enumerate(
+                    zip(
+                        self.optimizer.param_groups,
+                        self.get_lr(),
+                    )):
+                if (param_group is not None) and (i != param_group):
+                    continue
+                group, lr = data
+                group['lr'] = lr
+                self.print_lr(self.verbose, i, lr, epoch)
+        self._last_lr = [group['lr'] for group in self.optimizer.param_groups]

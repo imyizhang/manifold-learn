@@ -2,16 +2,21 @@ from typing import Callable, Optional, Sequence
 
 import torch
 
+# functional interface
+
 
 def encoder(
+    encoder_: str,
     in_features: int,
     out_features: int,
-    _encoder: str = 'mlp',
     **kwargs,
 ) -> torch.nn.Module:
-    if _encoder == 'mlp':
+    if encoder_ == 'mlp':
         return MLP(in_features, out_features, **kwargs)
-    raise ValueError(f"encoder '{_encoder}' is not supported")
+    raise ValueError(f"encoder '{encoder_}' is not supported")
+
+
+# torch.nn.Module interface
 
 
 class MLP(torch.nn.Sequential):

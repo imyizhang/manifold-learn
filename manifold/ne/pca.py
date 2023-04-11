@@ -1,7 +1,7 @@
 import torch
 from torch.linalg import svd
 
-from .base import Embedder
+from manifold.base import Estimator
 
 # create a random dataset with 100 samples and 20 features
 X = torch.randn(100, 20)
@@ -22,7 +22,6 @@ X_reduced = torch.mm(X_centered, V[:, :k])
 # print the variance explained by each principal component
 explained_variance = torch.pow(S[:k], 2) / (X_centered.shape[0] - 1)
 explained_variance_ratio = explained_variance / torch.sum(explained_variance)
-print(explained_variance_ratio)
 
 
 def svd_flip(u, v):
@@ -40,16 +39,14 @@ def svd():
 
 
 def pca(X: torch.Tensor, n_components: int) -> torch.Tensor:
-    m, n = X.size()
-    return
+    return PCA(n_components).fit_transform(X)
 
 
-class PCA(Embedder):
+class PCA(Estimator):
 
     def __init__(
         self,
         n_components: int = 2,
-        *,
     ):
         super().__init__()
         self.n_components = n_components
