@@ -1,19 +1,23 @@
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import numpy
 import torch
 
-from .base import Estimator
+from manifold.base import Estimator
 
-_nearest_neighbors = {}
+# functional interface
+
+registry = {}
 
 
-def register(nearest_neighbors):
-    algorithm = nearest_neighbors.__name__[1:]
-    if algorithm in _nearest_neighbors:
-        raise ValueError(f"'{algorithm}' is already registered")
-    _nearest_neighbors[algorithm] = nearest_neighbors
-    return nearest_neighbors
+def register(func):
+    name = func.__name__
+    while name.startswith("_"):
+        name = name[1:]
+    if name in registry:
+        raise ValueError(f"algorithm '{name}' is already registered")
+    registry[name] = func
+    return func
 
 
 @register
@@ -22,21 +26,28 @@ def _knn(
     n_neighbors: int,
     *,
     include_self: bool = False,
-    metric: str = 'euclidean',
-    metric_kwargs: Optional[dict] = None,
+    metric: str = "euclidean",
+    metric_kwargs: dict = {},
     n_jobs: Optional[int] = None,
     random_state: Optional[int] = None,
     **kwargs,
 ) -> Tuple[numpy.ndarray, numpy.ndarray]:
+    """KNN (K-Nearest Neighbors).
+
+    References:
+        [1] https://scikit-learn.org/stable/modules/generated/sklearn.neighbors.NearestNeighbors.html
+    """
     try:
         import sklearn.neighbors
     except ImportError:
-        raise ImportError("'scikit-learn' is not installed")
+        raise RuntimeError(
+            "'scikit-learn' is not installed, run `pip install scikit-learn` to install"
+        )
     index = sklearn.neighbors.NearestNeighbors(
         n_neighbors=n_neighbors,
-        algorithm='auto',
+        algorithm="auto",
         metric=metric,
-        metric_kwargs=metric_kwargs,
+        metric_params=metric_kwargs,
         n_jobs=n_jobs,
         **kwargs,
     )
@@ -56,18 +67,25 @@ def _annoy(
     n_neighbors: int,
     *,
     include_self: bool = False,
-    metric: str = 'euclidean',
-    metric_kwargs: Optional[dict] = None,
+    metric: str = "euclidean",
+    metric_kwargs: dict = {},
     n_jobs: Optional[int] = None,
     random_state: Optional[int] = None,
     **kwargs,
 ) -> Tuple[numpy.ndarray, numpy.ndarray]:
+    """Annoy (Approximate Nearest Neighbors Oh Yeah).
+
+    References:
+        [1] https://github.com/spotify/annoy
+    """
     try:
         import annoy
     except ImportError:
-        raise ImportError("'Annoy' is not installed")
+        raise RuntimeError(
+            "'Annoy' is not installed, run `pip install annoy` to install"
+        )
     n_samples, n_features = X.shape
-    n_trees = kwargs.get('n_trees', 20)
+    n_trees = kwargs.get("n_trees", 20)
     index = annoy.AnnoyIndex(n_features, metric=metric)
     if random_state is not None:
         index.set_seed(random_state)
@@ -76,8 +94,9 @@ def _annoy(
         index.build(n_trees=n_trees, n_jobs=n_jobs)
     else:
         index.build(n_trees=n_trees, n_jobs=-1)
-    neighbor_distances = numpy.empty((n_samples, n_neighbors),
-                                     dtype=numpy.float64)
+    neighbor_distances = numpy.empty(
+        (n_samples, n_neighbors), dtype=numpy.float64
+    )
     neighbor_indices = numpy.empty((n_samples, n_neighbors), dtype=numpy.int64)
     if not include_self:
         n_neighbors += 1
@@ -101,17 +120,22 @@ def _pynndescent(
     n_neighbors: int,
     *,
     include_self: bool = False,
-    metric: str = 'euclidean',
-    metric_kwargs: Optional[dict] = None,
+    metric: str = "euclidean",
+    metric_kwargs: dict = {},
     n_jobs: Optional[int] = None,
     random_state: Optional[int] = None,
     **kwargs,
 ) -> Tuple[numpy.ndarray, numpy.ndarray]:
+    """PyNNDescent for fast Approximate Nearest Neighbors.
+
+    References:
+        [1]  https://pynndescent.readthedocs.io/en/latest/
+    """
     try:
         import pynndescent
     except ImportError:
-        raise ImportError(
-            "'PyNNDescent' is not installed, run `pip install manifold[pynndescent]` to install"
+        raise RuntimeError(
+            "'PyNNDescent' is not installed, run `pip install pynndescent` to install"
         )
     n_samples = X.shape[0]
     n_trees = min(64, 5 + round(n_samples**0.5 / 20.0))
@@ -142,32 +166,43 @@ def _scann(
     n_neighbors: int,
     *,
     include_self: bool = False,
-    metric: str = 'euclidean',
-    metric_kwargs: Optional[dict] = None,
+    metric: str = "euclidean",
+    metric_kwargs: dict = {},
     n_jobs: Optional[int] = None,
-    random_state=None,
+    random_state: Optional[int] = None,
     **kwargs,
 ) -> Tuple[numpy.ndarray, numpy.ndarray]:
+    """ScaNN (Scalable Nearest Neighbors).
+
+    References:
+        [1] https://github.com/google-research/google-research/tree/master/scann
+    """
     try:
         import scann
     except ImportError:
-        raise ImportError(
-            "'ScaNN' is not installed, run `pip install manifold[scann]` to install"
+        raise RuntimeError(
+            "'ScaNN' is not installed, run `pip install scann` to install"
         )
     if not include_self:
         n_neighbors += 1
-    index = scann.scann_ops_pybind.builder(
-        X,
-        n_neighbors,
-        metric,
-    ).tree(
-        num_leaves=2000,
-        num_leaves_to_search=100,
-        training_sample_size=250000,
-    ).score_ah(
-        2,
-        anisotropic_quantization_threshold=0.2,
-    ).reorder(100).build()
+    index = (
+        scann.scann_ops_pybind.builder(
+            X,
+            n_neighbors,
+            metric,
+        )
+        .tree(
+            num_leaves=2000,
+            num_leaves_to_search=100,
+            training_sample_size=250000,
+        )
+        .score_ah(
+            2,
+            anisotropic_quantization_threshold=0.2,
+        )
+        .reorder(100)
+        .build()
+    )
     neighbor_indices, neighbor_distances = index.search_batched(
         n_neighbors,
         leaves_to_search=150,
@@ -178,50 +213,78 @@ def _scann(
     return neighbor_indices, neighbor_distances
 
 
-def nearest_neighbors(
-    X: torch.Tensor,
+def _nearest_neighbors(
+    X: numpy.ndarray,
     n_neighbors: int,
     *,
-    algorithm: str = 'annoy',
-    metric: str = 'euclidean',
-    metric_kwargs: Optional[dict] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    X = X.detach().cpu().numpy()
-    if algorithm not in _nearest_neighbors:
-        raise ValueError(f"'{algorithm}' is not supported")
-    neighbor_indices, neighbor_distances = _nearest_neighbors[algorithm](
+    algorithm: str = "annoy",
+    metric: str = "euclidean",
+    metric_kwargs: dict = {},
+    n_jobs: Optional[int] = None,
+    random_state: Optional[int] = None,
+    **kwargs,
+) -> Tuple[numpy.ndarray, numpy.ndarray]:
+    # go to https://ann-benchmarks.com/ for more algorithms
+    if algorithm not in registry:
+        raise ValueError(f"algorithm '{algorithm}' is not supported")
+    # force to return (numpy.int64, numpy.float64)
+    return registry[algorithm](
         X,
         n_neighbors,
         metric=metric,
         metric_kwargs=metric_kwargs,
+        n_jobs=n_jobs,
+        random_state=random_state,
+        **kwargs,
     )
-    return torch.from_numpy(neighbor_indices), torch.from_numpy(
-        neighbor_distances)
 
 
-def neighbor_graph(
-    X: Optional[torch.Tensor] = None,
-    n_neighbors: Optional[int] = None,
+def nearest_neighbors(
+    X: torch.Tensor,
+    num_neighbors: int,
     *,
-    algorithm: str = 'annoy',
-    metric: str = 'euclidean',
-    metric_kwargs: Optional[dict] = None,
-    nearest_neighbors_: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    algorithm: str = "annoy",
+    metric: str = "euclidean",
+    metric_kwargs: dict = {},
+    generator: Optional[torch.Generator] = None,
+    device: Optional[torch.device] = None,
+    **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if nearest_neighbors_ is None:
-        nearest_neighbors_ = nearest_neighbors(
-            X,
-            n_neighbors,
-            algorithm=algorithm,
-            metric=metric,
-            metric_kwargs=metric_kwargs,
-        )
-    neighbor_indices, neighbor_distances = nearest_neighbors_
-    n_samples, n_neighbors = neighbor_indices.shape
+    """Searches the nearest neighbors for each sample in X."""
+    if generator is None:
+        random_state = None
+    else:
+        seed = generator.initial_seed()
+        # normally, seed should be between 0 and 2**32 - 1, i.e., uint32, but maximum value for seed is 2**31 - 1 in 'annoy'
+        random_state = 0 if seed > 2**31 - 1 else seed
+    # force using desired device
+    device = X.device if device is None else device
+    X = X.detach().cpu().numpy()
+    neighbor_indices, neighbor_distances = _nearest_neighbors(
+        X,
+        num_neighbors,
+        algorithm=algorithm,
+        metric=metric,
+        metric_kwargs=metric_kwargs,
+        random_state=random_state,
+        **kwargs,
+    )
+    neighbor_indices = torch.from_numpy(neighbor_indices).to(device=device)
+    neighbor_distances = torch.from_numpy(neighbor_distances).to(device=device)
+    return neighbor_indices, neighbor_distances
+
+
+def to_neighbor_graph(
+    nearest_neighbors: Tuple[torch.Tensor, torch.Tensor],
+    /,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Computes a graph given the nearest neighbors."""
+    neighbor_indices, neighbor_distances = nearest_neighbors
+    num_samples, num_neighbors = neighbor_indices.shape
     crow_indices = torch.arange(
         0,
-        n_samples * n_neighbors + 1,
-        n_neighbors,
+        num_samples * num_neighbors + 1,
+        num_neighbors,
         dtype=torch.int64,
     )
     col_indices = neighbor_indices.view(-1)
@@ -238,308 +301,128 @@ def neighbor_graph(
     return neighbor_connectivities, neighbor_distances
 
 
-def neighbor_pairs(
-    X: Optional[torch.Tensor] = None,
-    n_neighbors: Optional[int] = None,
+def neighbor_graph(
+    X: torch.Tensor,
+    num_neighbors: int,
     *,
-    algorithm: str = 'annoy',
-    metric: str = 'euclidean',
-    metric_kwargs: Optional[dict] = None,
-    neighbor_graph_: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-    neighbor_pairs_: Optional[str] = None,
-) -> torch.Tensor:
-    if neighbor_pairs_ is not None:
-        return torch.load(neighbor_pairs_)
-    if neighbor_graph_ is None:
-        neighbor_graph_ = neighbor_graph(
+    algorithm: str = "annoy",
+    metric: str = "euclidean",
+    metric_kwargs: dict = {},
+    generator: Optional[torch.Generator] = None,
+    device: Optional[torch.device] = None,
+    **kwargs,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Returns a graph of the nearest neighbors for each sample in X."""
+    return to_neighbor_graph(
+        nearest_neighbors(
             X,
-            n_neighbors,
+            num_neighbors,
             algorithm=algorithm,
             metric=metric,
             metric_kwargs=metric_kwargs,
+            generator=generator,
+            device=device,
+            **kwargs,
         )
-    neighbor_connectivities, _ = neighbor_graph_
+    )
+
+
+def pair(
+    nearest_neighbors: Tuple[torch.Tensor, torch.Tensor],
+    /,
+) -> torch.Tensor:
+    """Pairs each sample with its nearest neighbors."""
+    neighbor_connectivities, _ = nearest_neighbors
+    # the nearest neighbors or a graph for the nearest neighbors
+    # https://github.com/pytorch/pytorch/issues/101385
+    if not neighbor_connectivities.is_sparse_csr:
+        # raise TypeError(
+        #     f"expected 'torch.sparse_csr_tensor' for neighbor graph, but got '{type(neighbor_connectivities)}'"
+        # )
+        neighbor_connectivities, _ = to_neighbor_graph(nearest_neighbors)
     return neighbor_connectivities.to_sparse_coo().indices().T
 
 
-def neighbor_pair_loader(
-    neighbor_pairs: torch.Tensor,
-    batch_size: int = 1,
-    shuffle: bool = True,
-    drop_last: bool = False,
-):
-    return NeighborPairLoader(
-        neighbor_pairs,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        drop_last=drop_last,
+def scale(
+    nearest_neighbors: Tuple[torch.Tensor, torch.Tensor],
+    /,
+    start: int = 3,
+    end: int = 6,
+    eps: float = 1e-8,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Scales the nearest neighbors for each sample."""
+    neighbor_indices, neighbor_distances = nearest_neighbors
+    # compute scale factor
+    sigma = neighbor_distances[:, start:end].mean(dim=1).clamp(min=eps)
+    # rescale distances
+    scaled_neighbor_distances = (
+        neighbor_distances**2
+        / sigma.unsqueeze(dim=1)
+        / sigma[neighbor_indices]
     )
-
-
-class NeighborPairLoader:
-
-    def __init__(
-        self,
-        neighbor_pairs: torch.Tensor,
-        batch_size: int = 1,
-        shuffle: bool = True,
-        drop_last: bool = False,
-    ):
-        self.neighbor_pairs = neighbor_pairs
-        self.n_samples = self.neighbor_pairs.shape[0]
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.drop_last = drop_last
-        n_batches, remainder = divmod(self.n_samples, self.batch_size)
-        if remainder > 0 and not self.drop_last:
-            n_batches += 1
-        self.n_batches = n_batches
-
-    def __len__(self):
-        return self.n_batches
-
-    def __iter__(self):
-        if self.shuffle:
-            self.indices = torch.randperm(self.n_samples)
-        else:
-            self.indices = None
-        self.index = 0
-        return self
-
-    def __next__(self):
-        if self.index >= min(self.n_batches * self.batch_size, self.n_samples):
-            raise StopIteration
-        if self.indices is not None:
-            indices = self.indices[self.index:self.index + self.batch_size]
-            batch = torch.index_select(self.neighbor_pairs, 0, indices)
-        else:
-            batch = self.neighbor_pairs[self.index:self.index + self.batch_size]
-        self.index += self.batch_size
-        return batch
-
-
-# (2 * B, d)
-def batch_embeddings(embeddings: torch.Tensor) -> torch.Tensor:
-    return torch.vstack((embeddings[:, 0, :], embeddings[:, 1, :]))
-
-
-# (B, 1) torch.int64
-def batch_positive_samples(
-    batch_size: int,
-    num_positive_samples: int = 1,
-    device: Optional[torch.device] = None,
-) -> torch.Tensor:
-    if num_positive_samples == 1:
-        return torch.arange(
-            batch_size,
-            2 * batch_size,
-            dtype=torch.int64,
-            device=device,
-        ).unsqueeze(dim=1)
-    raise NotImplementedError
-
-
-def batch_max_negative_samples(
-    batch_size: int,
-    include_anchor: bool = False,
-    include_positive: bool = False,
-) -> int:
-    max1 = batch_size if include_anchor else batch_size - 1
-    max2 = batch_size if include_positive else batch_size - 1
-    return max1 + max2
-
-
-# (B, 2 * B) torch.bool
-def batch_negative_sample_mask(
-    batch_size: int,
-    include_anchor: bool = False,
-    include_positive: bool = False,
-    device: Optional[torch.device] = None,
-) -> torch.Tensor:
-    excluded = ~torch.eye(batch_size, dtype=torch.bool, device=device)
-    included = torch.ones_like(excluded)
-    mask1 = included if include_anchor else excluded
-    mask2 = included if include_positive else excluded
-    return torch.hstack((mask1, mask2))
-
-
-def batch_negative_sampling(
-    batch_size: int,
-    num_negative_samples: int = 5,
-    include_anchor: bool = False,
-    include_positive: bool = False,
-    negative_sampling: str = 'uniform',
-    replacement: bool = False,
-    device: Optional[torch.device] = None,
-) -> dict:
-    max_negative_samples = batch_max_negative_samples(
-        batch_size,
-        include_anchor=include_anchor,
-        include_positive=include_positive,
+    # resort neighbors according to scaled distances
+    scaled_neighbor_indices = neighbor_indices.gather(
+        dim=1,
+        index=scaled_neighbor_distances.argsort(dim=1),
     )
-    num_negative_samples = min(num_negative_samples, max_negative_samples)
-    if negative_sampling == 'uniform':
-        negative_sample_mask = batch_negative_sample_mask(
-            batch_size,
-            include_anchor=include_anchor,
-            include_positive=include_positive,
-        )
-        weights = negative_sample_mask.to(dtype=torch.float64)
-    else:
-        raise NotImplementedError
-    return {
-        'num_negative_samples': num_negative_samples,
-        'weights': weights,
-        'replacement': replacement,
-        'device': device,
-    }
+    return scaled_neighbor_indices, scaled_neighbor_distances
 
 
-# (B, m) torch.int64
-def batch_negative_samples(
-    batch_size: Optional[int] = None,
-    num_negative_samples: int = 5,
-    include_anchor: bool = False,
-    include_positive: bool = False,
-    negative_sampling: str = 'uniform',
-    weights: Optional[torch.Tensor] = None,
-    replacement: bool = False,
-    device: Optional[torch.device] = None,
-) -> torch.Tensor:
-    if weights is None:
-        kwargs = batch_negative_sampling(
-            batch_size,
-            num_negative_samples=num_negative_samples,
-            include_anchor=include_anchor,
-            include_positive=include_positive,
-            negative_sampling=negative_sampling,
-            replacement=replacement,
-            device=device,
-        )
-        num_negative_samples = kwargs['num_negative_samples']
-        weights = kwargs['weights']
-    return torch.multinomial(
-        weights,
-        num_negative_samples,
-        replacement=replacement,
-    ).to(device=device)
-
-
-# (B, 1) torch.int64
-def batch_anchor_index(
-    batch_size: int,
-    device: Optional[torch.device] = None,
-) -> torch.Tensor:
-    return torch.arange(
-        0,
-        batch_size,
-        dtype=torch.int64,
-        device=device,
-    ).unsqueeze(dim=1)
-
-
-# (B, 1 + m) torch.int64
-def batch_neighbor_indices(
-    batch_size: Optional[int] = None,
-    num_positive_samples: int = 1,
-    num_negative_samples: int = 5,
-    include_anchor: bool = False,
-    include_positive: bool = False,
-    negative_sampling: str = 'uniform',
-    weights: Optional[torch.Tensor] = None,
-    replacement: bool = False,
-    device: Optional[torch.device] = None,
-    positive_samples: Optional[torch.Tensor] = None,
-    negative_samples: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    if positive_samples is None:
-        positive_samples = batch_positive_samples(
-            batch_size,
-            num_positive_samples=num_positive_samples,
-            device=device,
-        )
-    if negative_samples is None:
-        negative_samples = batch_negative_samples(
-            batch_size=batch_size,
-            num_negative_samples=num_negative_samples,
-            include_anchor=include_anchor,
-            include_positive=include_positive,
-            negative_sampling=negative_sampling,
-            weights=weights,
-            replacement=replacement,
-            device=device,
-        )
-    return torch.hstack((positive_samples, negative_samples))
-
-
-# (B, 1 + m) torch.bool
-def batch_neighbor_mask(
-    batch_size: Optional[int] = None,
-    num_positive_samples: int = 1,
-    num_negative_samples: int = 5,
-    device: Optional[torch.device] = None,
-    neighbor_indices: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    if neighbor_indices is not None:
-        neighbor_mask = torch.zeros_like(neighbor_indices, dtype=torch.bool)
-        neighbor_mask[:, :num_positive_samples] = True
-    else:
-        neighbor_mask = torch.zeros(
-            (batch_size, num_positive_samples + num_negative_samples),
-            dtype=torch.bool,
-            device=device,
-        )
-        neighbor_mask[:, :num_positive_samples] = True
-    return neighbor_mask
-
-
-# torch.nn.Module interface
+# class interface
 
 
 class NearestNeighbors(Estimator):
+    """Nearest neighbor searcher for each sample in X."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        num_neighbors: int,
+        *,
+        metric: str = "euclidean",
+        metric_kwargs: dict = {},
+        generator: Optional[torch.Generator] = None,
+        device: Optional[torch.device] = None,
+        **kwargs,
+    ) -> None:
         super().__init__()
+        self.num_neighbors = num_neighbors
+        self.metric = metric
+        self.metric_kwargs = metric_kwargs
+        self.generator = generator
+        self.device = device
+        self.kwargs = kwargs
 
     def forward(self):
-        raise
+        raise NotImplementedError(
+            f"call method '{type(self).__name__}.fit()' instead"
+        )
 
     def fit(
         self,
         X: torch.Tensor,
         y: Optional[torch.Tensor] = None,
-    ) -> 'NearestNeighbors':
-        """Fit the model with X."""
+    ) -> "NearestNeighbors":
+        self.neighbor_indices, self.neighbor_distances = nearest_neighbors(
+            X,
+            self.num_neighbors,
+            algorithm=self.algorithm,
+            metric=self.metric,
+            metric_kwargs=self.metric_kwargs,
+            generator=self.generator,
+            device=self.device,
+            **self.kwargs,
+        )
         return self
 
     def fit_transform(
         self,
         X: torch.Tensor,
         y: Optional[torch.Tensor] = None,
-        **fit_params,
-    ) -> torch.Tensor:
-        """Fit to data, then transform it.
-
-        Fits transformer to `X` and `y` with optional parameters `fit_params`
-        and returns a transformed version of `X`.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Input samples.
-        y :  array-like of shape (n_samples,) or (n_samples, n_outputs), \
-                default=None
-            Target values (None for unsupervised transformations).
-        **fit_params : dict
-            Additional fit parameters.
-
-        Returns
-        -------
-        X_new : ndarray array of shape (n_samples, n_features_new)
-            Transformed array.
-        """
-        return self.fit(X, y=y, **fit_params).transform(X)
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self.fit(X, y=y)
+        return self.neighbor_indices, self.neighbor_distances
 
     def transform(self, X: torch.Tensor) -> torch.Tensor:
-        """Apply dimensionality reduction to X."""
-        return
+        raise NotImplementedError(
+            f"call method '{type(self).__name__}.fit_transform()' instead"
+        )

@@ -1,80 +1,106 @@
-import torch
-from torch.linalg import svd
+from typing import Optional, Tuple
 
+import torch
+
+import manifold.metrics
 from manifold.base import Estimator
 
-# create a random dataset with 100 samples and 20 features
-X = torch.randn(100, 20)
-
-# center the data
-X_mean = torch.mean(X, dim=0, keepdim=True)
-X_centered = X - X_mean
-
-# perform SVD
-U, S, V = svd(X_centered)
-
-# choose the number of principal components to keep
-k = 5
-
-# compute the reduced dimensionality representation of the data
-X_reduced = torch.mm(X_centered, V[:, :k])
-
-# print the variance explained by each principal component
-explained_variance = torch.pow(S[:k], 2) / (X_centered.shape[0] - 1)
-explained_variance_ratio = explained_variance / torch.sum(explained_variance)
+# functional interface
 
 
-def svd_flip(u, v):
-    # columns of u, rows of v
-    max_abs_cols = torch.argmax(torch.abs(u), 0)
-    i = torch.arange(u.shape[1]).to(u.device)
-    signs = torch.sign(u[max_abs_cols, i])
-    u *= signs
-    v *= signs.view(-1, 1)
-    return u, v
+def svd(
+    X: torch.Tensor,
+    *,
+    full_matrices: bool = False,
+    driver: Optional[str] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Applies the singular value decomposition (SVD)."""
+    return torch.linalg.svd(
+        X,
+        full_matrices=full_matrices,
+        driver=driver,
+    )
 
 
-def svd():
-    return
+def flip_sign(
+    U: torch.Tensor,
+    S: torch.Tensor,
+    Vh: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Flips the signs of (U, S, Vh) to ensure deterministic ouput from SVD.
+
+    References:
+        [1] https://github.com/scikit-learn/scikit-learn/blob/main/sklearn/utils/extmath.py#L829
+    """
+    rows_max_abs = U.abs().argmax(dim=0)
+    cols = torch.arange(U.size(dim=1), dtype=torch.int64, device=U.device)
+    signs = torch.sign(U[rows_max_abs, cols])
+    U *= signs
+    Vh *= signs.view(-1, 1)
+    return U, S, Vh
 
 
-def pca(X: torch.Tensor, n_components: int) -> torch.Tensor:
-    return PCA(n_components).fit_transform(X)
+def pca(X: torch.Tensor, num_components: int) -> torch.Tensor:
+    """Applies the principal component analysis (PCA).
+
+    References:
+        [1] https://forums.fast.ai/t/svd-sign-ambiguity-for-pca-determinism/12480
+    """
+    _, num_features = X.shape
+    if num_components > num_features:
+        raise ValueError(
+            f"expected num_components mast be a positive integer no greater than num_features, but got {num_components}"
+        )
+    X = manifold.metrics.mean_normalize(X, dim=0)
+    U, S, Vh = svd(X, full_matrices=False)
+    U, S, Vh = flip_sign(U, S, Vh)
+    return torch.matmul(X, Vh[:num_components].T)
+
+
+# class interface
 
 
 class PCA(Estimator):
+    """Principal component analysis (PCA).
+
+    References:
+        [1] https://scikit-learn.org/stable/modules/generated/sklearn.decomposition.PCA.html
+    """
 
     def __init__(
         self,
-        n_components: int = 2,
+        num_components: int = 2,
     ):
         super().__init__()
-        self.n_components = n_components
+        self.num_components = num_components
 
-    @torch.no_grad()
-    def fit(self, X):
-        n, d = X.size()
-        if self.n_components is not None:
-            d = min(self.n_components, d)
-        self.register_buffer("mean_", X.mean(0, keepdim=True))
-        Z = X - self.mean_     # center
-        U, S, Vh = torch.linalg.svd(Z, full_matrices=False)
-        Vt = Vh
-        U, Vt = svd_flip(U, Vt)
-        self.register_buffer("components_", Vt[:d])
+    def forward(self):
+        raise NotImplementedError(
+            f"call method '{type(self).__name__}.fit()' instead"
+        )
+
+    def fit(self, X: torch.Tensor) -> "PCA":
+        _, num_features = X.shape
+        if self.num_components > num_features:
+            raise ValueError(
+                f"expected num_components mast be a positive integer no greater than num_features, but got {self.num_components}"
+            )
+        self.register_buffer("mean_", X.mean(dim=0))
+        U, S, Vh = svd(X - self.mean_, full_matrices=False)
+        U, S, Vh = flip_sign(U, S, Vh)
+        self.register_buffer("components_", Vh[: self.num_components])
         return self
 
-    def forward(self, X):
-        return self.transform(X)
-
-    def transform(self, X):
-        assert hasattr(self, "components_"), "PCA must be fit before use."
-        return torch.matmul(X - self.mean_, self.components_.t())
-
-    def fit_transform(self, X):
+    def fit_transform(self, X: torch.Tensor) -> torch.Tensor:
         self.fit(X)
-        return self.transform(X)
+        return torch.matmul(X - self.mean_, self.components_.T)
 
-    def inverse_transform(self, Y):
-        assert hasattr(self, "components_"), "PCA must be fit before use."
+    def transform(self, X: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError(
+            f"call method '{type(self).__name__}.fit_transform()' instead"
+        )
+
+    def inverse_transform(self, Y: torch.Tensor) -> torch.Tensor:
+        if not hasattr(self, "components_"):
+            raise RuntimeError(f"call '{type(self).__name__}.fit()' first")
         return torch.matmul(Y, self.components_) + self.mean_

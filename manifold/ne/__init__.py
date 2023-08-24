@@ -1,9 +1,9 @@
-from .pca import pca, PCA
-from .tsne import tsne, TSNE
+from .pca import PCA, pca
+from .trimap import TriMAP, trimap
 
 __all__ = (
-    'pca',
-    'tsne',
-    'PCA',
-    'TSNE',
+    "pca",
+    "trimap",
+    "PCA",
+    "TriMAP",
 )
