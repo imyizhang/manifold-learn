@@ -5,7 +5,17 @@ import torch
 
 from manifold.base import Estimator
 
+__all__ = (
+    "registry",
+    "register",
+    "nearest_neighbors",
+    "scale",
+    "NearestNeighbors",
+)
+
+
 # functional interface
+
 
 registry = {}
 
@@ -274,6 +284,31 @@ def nearest_neighbors(
     return neighbor_indices, neighbor_distances
 
 
+def scale(
+    nearest_neighbors: Tuple[torch.Tensor, torch.Tensor],
+    /,
+    start: int = 3,
+    end: int = 6,
+    eps: float = 1e-8,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Scales the nearest neighbors for each sample."""
+    neighbor_indices, neighbor_distances = nearest_neighbors
+    # compute scale factor
+    sigma = neighbor_distances[:, start:end].mean(dim=1).clamp(min=eps)
+    # rescale distances
+    scaled_neighbor_distances = (
+        neighbor_distances**2
+        / sigma.unsqueeze(dim=1)
+        / sigma[neighbor_indices]
+    )
+    # resort neighbors according to scaled distances
+    scaled_neighbor_indices = neighbor_indices.gather(
+        dim=1,
+        index=scaled_neighbor_distances.argsort(dim=1),
+    )
+    return scaled_neighbor_indices, scaled_neighbor_distances
+
+
 def to_neighbor_graph(
     nearest_neighbors: Tuple[torch.Tensor, torch.Tensor],
     /,
@@ -341,31 +376,6 @@ def pair(
         # )
         neighbor_connectivities, _ = to_neighbor_graph(nearest_neighbors)
     return neighbor_connectivities.to_sparse_coo().indices().T
-
-
-def scale(
-    nearest_neighbors: Tuple[torch.Tensor, torch.Tensor],
-    /,
-    start: int = 3,
-    end: int = 6,
-    eps: float = 1e-8,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Scales the nearest neighbors for each sample."""
-    neighbor_indices, neighbor_distances = nearest_neighbors
-    # compute scale factor
-    sigma = neighbor_distances[:, start:end].mean(dim=1).clamp(min=eps)
-    # rescale distances
-    scaled_neighbor_distances = (
-        neighbor_distances**2
-        / sigma.unsqueeze(dim=1)
-        / sigma[neighbor_indices]
-    )
-    # resort neighbors according to scaled distances
-    scaled_neighbor_indices = neighbor_indices.gather(
-        dim=1,
-        index=scaled_neighbor_distances.argsort(dim=1),
-    )
-    return scaled_neighbor_indices, scaled_neighbor_distances
 
 
 # class interface

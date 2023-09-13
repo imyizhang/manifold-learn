@@ -2,23 +2,35 @@ from typing import Callable, Optional, Sequence
 
 import torch
 
+__all__ = (
+    "encoder",
+    "get_encoder",
+    "Encoder",
+)
+
 # functional interface
 
 
 def encoder(
-    encoder_: str,
+    name: str,
     /,
     in_features: int,
     out_features: int,
     **kwargs,
-) -> torch.nn.Module:
-    """Maps an encoder name to a `torch.nn.Module."""
-    if encoder_ == "mlp":
+) -> "Encoder":
+    """Maps an encoder name to a `manifold.encoders.Encoder`."""
+    if name == "mlp":
         return MLP(in_features, out_features, **kwargs)
-    raise ValueError(f"encoder '{encoder_}' is not supported")
+    raise ValueError(f"encoder '{name}' is not supported")
+
+
+get_encoder = encoder
 
 
 # class interface
+
+
+Encoder = torch.nn.Module
 
 
 class MLP(torch.nn.Sequential):

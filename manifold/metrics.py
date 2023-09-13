@@ -1,76 +1,24 @@
-from typing import Optional, Union
+from typing import Optional
 
 import torch
 
+__all__ = (
+    "distance",
+    "pairwise_distance",
+    "similarity",
+    "pairwise_similarity",
+    "negative_log_likelihood",
+    "binary_cross_entropy",
+    "cross_entropy",
+    "kullback_leibler_divergence",
+    "mle_loss",
+    "nce_loss",
+    "infonce_loss",
+    "soft_nearest_neighbor_loss",
+)
+
+
 # functional interface
-
-
-def minmax_normalize(
-    x: torch.Tensor,
-    *,
-    dim: Optional[int] = None,
-    min: float = 0.0,
-    max: float = 1.0,
-) -> torch.Tensor:
-    """Scales x to the range [min, max].
-
-    Shapes:
-        - x: :math:`(*, D)`
-    """
-    xmin = x.min() if dim is None else x.min(dim=dim, keepdim=True).values
-    xmax = x.max() if dim is None else x.max(dim=dim, keepdim=True).values
-    return min + (max - min) * (x - xmin) / (xmax - xmin)
-
-
-def mean_normalize(
-    x: torch.Tensor,
-    *,
-    dim: Optional[int] = None,
-) -> torch.Tensor:
-    """Standardizes x to have zero mean.
-
-    Shapes:
-        - x: :math:`(*, D)`
-    """
-    xmean = x.mean() if dim is None else x.mean(dim=dim, keepdim=True)
-    return x - xmean
-
-
-def standardize(
-    x: torch.Tensor,
-    *,
-    dim: Optional[int] = None,
-    correction: int = 0,
-    eps: float = 1e-8,
-) -> torch.Tensor:
-    """Standardizes x to have zero mean and unit variance.
-
-    Shapes:
-        - x: :math:`(*, D)`
-    """
-    xstd = (
-        x.std(correction=correction)
-        if dim is None
-        else x.std(dim=dim, correction=correction, keepdim=True)
-    )
-    return mean_normalize(x, dim=dim) / xstd.clamp(min=eps)
-
-
-def normalize(
-    x: torch.Tensor,
-    *,
-    p: float = 2.0,
-    dim: Optional[int] = None,
-    eps: float = 1e-8,
-) -> torch.Tensor:
-    """p-normalizes x.
-
-    Shapes:
-        - x: :math:`(*, D)`
-    """
-    # torch.nn.functional.normalize(x, p=p, dim=dim, eps=eps)
-    xnorm = x.norm(p=p) if dim is None else x.norm(p=p, dim=dim, keepdim=True)
-    return x / xnorm.clamp(min=eps)
 
 
 def cosine_distance(
@@ -264,7 +212,8 @@ def pairwise_distance(
         - x: :math:`(*, D)`
         - y: :math:`(*, D)`
     """
-    return
+    # TODO
+    raise NotImplementedError
 
 
 def gaussian_kernel(
@@ -357,8 +306,8 @@ def pearson_correlation_coefficient(
         - y: :math:`(*, D)`
     """
     return cosine_similarity(
-        mean_normalize(x, dim=dim),
-        mean_normalize(y, dim=dim),
+        x - x.mean(dim=dim, keepdim=keepdim),
+        y - y.mean(dim=dim, keepdim=keepdim),
         dim=dim,
         keepdim=keepdim,
         eps=eps,
@@ -379,7 +328,8 @@ def spearman_correlation_coefficient(
         - x: :math:`(*, D)`
         - y: :math:`(*, D)`
     """
-    return
+    # TODO
+    raise NotImplementedError
 
 
 def similarity(
@@ -419,7 +369,8 @@ def pairwise_similarity(
         - x: :math:`(*, D)`
         - y: :math:`(*, D)`
     """
-    return
+    # TODO
+    raise NotImplementedError
 
 
 def log(
@@ -512,6 +463,17 @@ def cross_entropy(
     return negative_log_likelihood(input, target, reduction=reduction, **kwargs)
 
 
+def kullback_leibler_divergence(
+    input: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    reduction: str = "mean",
+    **kwargs,
+) -> torch.Tensor:
+    # TODO
+    raise NotImplementedError
+
+
 def mle_loss(
     P: torch.Tensor,
     Q: torch.Tensor,
@@ -587,10 +549,21 @@ def soft_nearest_neighbor_loss(
     raise ValueError(f"reduction '{reduction}' is not supported")
 
 
+def criterion(name: str, **kwargs) -> "Metric":
+    if name == "infonce":
+        return InfoNCELoss(**kwargs)
+    if name == "soft_nearest_neighbor":
+        return SoftNearestNeighborLoss(**kwargs)
+    raise ValueError(f"criterion '{name}' is not supported")
+
+
 # class interface
 
 
-class Distance(torch.nn.Module):
+Metric = torch.nn.Module
+
+
+class Distance(Metric):
     def __init__(self, metric: str = "euclidean", **kwargs) -> None:
         super().__init__()
         self.metric = metric
@@ -604,7 +577,7 @@ class Distance(torch.nn.Module):
         return distance(x, y, metric=self.metric, **self.kwargs)
 
 
-class PairwiseDistance(torch.nn.Module):
+class PairwiseDistance(Metric):
     def __init__(self, metric: str = "euclidean", **kwargs) -> None:
         super().__init__()
         self.metric = metric
@@ -618,7 +591,7 @@ class PairwiseDistance(torch.nn.Module):
         return pairwise_distance(x, y, metric=self.metric, **self.kwargs)
 
 
-class Similarity(torch.nn.Module):
+class Similarity(Metric):
     def __init__(self, metric: str = "euclidean", **kwargs) -> None:
         super().__init__()
         self.metric = metric
@@ -632,7 +605,7 @@ class Similarity(torch.nn.Module):
         return similarity(x, y, metric=self.metric, **self.kwargs)
 
 
-class PairwiseSimilarity(torch.nn.Module):
+class PairwiseSimilarity(Metric):
     def __init__(self, metric: str = "euclidean", **kwargs) -> None:
         super().__init__()
         self.metric = metric

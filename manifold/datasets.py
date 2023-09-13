@@ -3,9 +3,35 @@ from typing import Callable, Generic, Optional, Tuple, TypeVar, Union
 
 import numpy
 
+import manifold.transforms
+
+__all__ = (
+    "registry",
+    "register",
+    "get",
+    "dataset",
+    "get_dataset",
+    "Dataset",
+)
+
+
 # functional interface
 
+
 registry: dict = {}
+
+
+def get(
+    name: str,
+    to_tensor: bool = False,
+    **kwargs,
+) -> Tuple[numpy.ndarray, numpy.ndarray]:
+    X, y = registry[name](**kwargs)
+    if to_tensor:
+        X = manifold.transforms.to_tensor(X)
+        if y is not None:
+            y = manifold.transforms.to_tensor(y)
+    return X, y
 
 
 def register(func):
@@ -16,28 +42,6 @@ def register(func):
         raise ValueError(f"dataset '{name}' is already registered")
     registry[name] = func
     return func
-
-
-def download():
-    """Downloads dataset."""
-    # TODO
-    raise NotImplementedError
-
-
-def extract():
-    """Extracts dataset."""
-    # TODO
-    raise NotImplementedError
-
-
-def save(file, *args, **kwargs):
-    """Saves dataset into a single file in compressed .npz format."""
-    return numpy.savez_compressed(file, *args, **kwargs)
-
-
-def load(file):
-    """Loads dataset from .npz file."""
-    return numpy.load(file, allow_pickle=True)
 
 
 def to_random_state(
@@ -303,17 +307,26 @@ def swiss_roll(
     return X, theta
 
 
-def _dataset(
-    file: str,
-    root: str = "./",
-    download: bool = False,
-) -> Tuple[numpy.ndarray, numpy.ndarray]:
-    if download:
-        raise NotImplementedError
-    file = os.path.join(root, file)
-    # print(f"loading {file}")
-    data = load(file)
-    return data["X"], data["y"]
+def download():
+    """Downloads dataset."""
+    # TODO
+    raise NotImplementedError
+
+
+def extract():
+    """Extracts dataset."""
+    # TODO
+    raise NotImplementedError
+
+
+def save(file, *args, **kwargs):
+    """Saves dataset into a single file in compressed `.npz` format."""
+    return numpy.savez_compressed(file, *args, **kwargs)
+
+
+def load(file):
+    """Loads dataset from `.npz` file."""
+    return numpy.load(file, allow_pickle=True)
 
 
 @register
@@ -571,6 +584,65 @@ def mosmann(
     return data["X"], data["y"]
 
 
+def dataset(
+    name: str,
+) -> "Dataset":
+    if name == "heart":
+        return Heart()
+    if name == "circle":
+        return Circle()
+    if name == "curve":
+        return Curve()
+    if name == "square":
+        return Square()
+    if name == "cluster":
+        return Cluster()
+    if name == "clusters":
+        return Clusters()
+    if name == "s_curve":
+        return SCurve()
+    if name == "swiss_roll":
+        return SwissRoll()
+    if name == "mammoth":
+        return Mammoth()
+    if name == "t_rex":
+        return TRex()
+    if name == "mnist":
+        return MNIST()
+    if name == "kuzushiji_mnist":
+        return KuzushijiMNIST()
+    if name == "fashion_mnist":
+        return FashionMNIST()
+    if name == "cifar10":
+        return CIFAR10()
+    if name == "cifar100":
+        return CIFAR100()
+    if name == "coil20":
+        return COIL20()
+    if name == "coil100":
+        return CIFAR100()
+    if name == "tess":
+        return Tess()
+    if name == "anna":
+        return Anna()
+    if name == "levine13dim":
+        return Levine13dim()
+    if name == "levine32dim":
+        return Levine32dim()
+    if name == "samusik01":
+        return Samusik01()
+    if name == "samusik":
+        return Samusik()
+    if name == "nilsson":
+        return Nilsson()
+    if name == "mosmann":
+        return Mosmann()
+    raise ValueError(f"dataset '{name}' is not supported")
+
+
+get_dataset = dataset
+
+
 # class interface
 
 
@@ -610,6 +682,18 @@ class Circle(Heart):
 
     def __call__(self, *args, **kwargs) -> Tuple[numpy.ndarray, numpy.ndarray]:
         return circle(*args, **kwargs)
+
+
+class Curve(Heart):
+    """2D polynomial curve dataset.
+
+    References:
+        [1] Andy Coenen and Adam Pearce. "Understanding UMAP", 2019. https://pair-code.github.io/understanding-umap/
+        [2] Wattenberg, et al., "How to Use t-SNE Effectively", Distill, 2016. https://distill.pub/2016/misread-tsne/
+    """
+
+    def __call__(self, *args, **kwargs) -> Tuple[numpy.ndarray, numpy.ndarray]:
+        return curve(*args, **kwargs)
 
 
 class Square(Heart):
@@ -761,6 +845,51 @@ class MNIST(Dataset[Tuple[numpy.ndarray, numpy.ndarray]]):
         return mnist(*args, **kwargs)
 
 
+class KuzushijiMNIST(MNIST):
+    """Kuzushiji-MNIST dataset.
+
+    References:
+        [1] https://github.com/rois-codh/kmnist
+    """
+
+    classes = (
+        "o",
+        "ki",
+        "su",
+        "tsu",
+        "na",
+        "ha",
+        "ma",
+        "ya",
+        "re",
+        "wo",
+    )  # 10
+
+    mirrors = ["http://codh.rois.ac.jp/kmnist/dataset/kmnist/"]
+
+    resources = {
+        "training images": (
+            "train-images-idx3-ubyte.gz",
+            "bdb82020997e1d708af4cf47b453dcf7",
+        ),
+        "training labels": (
+            "train-labels-idx1-ubyte.gz",
+            "e144d726b3acfaa3e44228e80efcd344",
+        ),
+        "test images": (
+            "t10k-images-idx3-ubyte.gz",
+            "5c965bf0a639b31b8f53240b1b52f4d7",
+        ),
+        "test labels": (
+            "t10k-labels-idx1-ubyte.gz",
+            "7320c461ea6c1c855c0b718fb2a4b134",
+        ),
+    }
+
+    def __call__(self, *args, **kwargs) -> Tuple[numpy.ndarray, numpy.ndarray]:
+        return kuzushiji_mnist(*args, **kwargs)
+
+
 class FashionMNIST(MNIST):
     """Fashion MNIST dataset.
 
@@ -806,51 +935,6 @@ class FashionMNIST(MNIST):
 
     def __call__(self, *args, **kwargs) -> Tuple[numpy.ndarray, numpy.ndarray]:
         return fashion_mnist(*args, **kwargs)
-
-
-class KuzushijiMNIST(MNIST):
-    """Kuzushiji-MNIST dataset.
-
-    References:
-        [1] https://github.com/rois-codh/kmnist
-    """
-
-    classes = (
-        "o",
-        "ki",
-        "su",
-        "tsu",
-        "na",
-        "ha",
-        "ma",
-        "ya",
-        "re",
-        "wo",
-    )  # 10
-
-    mirrors = ["http://codh.rois.ac.jp/kmnist/dataset/kmnist/"]
-
-    resources = {
-        "training images": (
-            "train-images-idx3-ubyte.gz",
-            "bdb82020997e1d708af4cf47b453dcf7",
-        ),
-        "training labels": (
-            "train-labels-idx1-ubyte.gz",
-            "e144d726b3acfaa3e44228e80efcd344",
-        ),
-        "test images": (
-            "t10k-images-idx3-ubyte.gz",
-            "5c965bf0a639b31b8f53240b1b52f4d7",
-        ),
-        "test labels": (
-            "t10k-labels-idx1-ubyte.gz",
-            "7320c461ea6c1c855c0b718fb2a4b134",
-        ),
-    }
-
-    def __call__(self, *args, **kwargs) -> Tuple[numpy.ndarray, numpy.ndarray]:
-        return kuzushiji_mnist(*args, **kwargs)
 
 
 class CIFAR10(Dataset[Tuple[numpy.ndarray, numpy.ndarray]]):

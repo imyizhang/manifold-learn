@@ -4,47 +4,61 @@ from typing import Optional, Sequence, Union
 
 import torch
 
+__all__ = (
+    "optimizer",
+    "get_optimizer",
+    "lr_scheduler",
+    "get_lr_scheduler",
+    "Optimizer",
+    "LRScheduler",
+)
+
+
 # functional interface
 
 
 def optimizer(
-    optimizer_: str,
+    name: str,
     /,
     params: list,
     lr: float,
     **kwargs,
-) -> torch.optim.Optimizer:
-    """Maps an optimizer name to a `torch.optim.Optimizer`.
+) -> "Optimizer":
+    """Maps an optimizer name to a `manifold.optim.Optimizer`.
 
     References:
         [1] https://pytorch.org/docs/stable/optim.html#algorithms
     """
-    if optimizer_ == "sgd":
+    if name == "sgd":
         return torch.optim.SGD(params, lr=lr, **kwargs)
-    if optimizer_ == "adam":
+    if name == "adam":
         return torch.optim.Adam(params, lr=lr, **kwargs)
-    raise ValueError(f"optimizer '{optimizer_}' is not supported")
+    raise ValueError(f"optimizer '{name}' is not supported")
+
+
+get_optimizer = optimizer
 
 
 def lr_scheduler(
-    lr_scheduler_: str,
+    name: str,
     /,
-    optimizer: torch.optim.Optimizer,
+    optimizer: "Optimizer",
     annealing: str,
     **kwargs,
-) -> torch.optim.lr_scheduler.LRScheduler:
-    """Maps an learning rate scheduler name to a `torch.optim.lr_scheduler.LRScheduler`.
+) -> "LRScheduler":
+    """Maps a learning rate scheduler name to a `manifold.optim.LRScheduler`.
 
     References:
         [1] https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
     """
-    if lr_scheduler_ == "warmup":
+    if name == "warmup":
         return AnnealingWithWarmup(optimizer, annealing, **kwargs)
-    if lr_scheduler_ == "warm_restarts":
+    if name == "warm_restarts":
         return AnnealingWithWarmRestarts(optimizer, annealing, **kwargs)
-    raise ValueError(
-        f"learning rate scheduler '{lr_scheduler}' is not supported"
-    )
+    raise ValueError(f"learning rate scheduler '{name}' is not supported")
+
+
+get_lr_scheduler = lr_scheduler
 
 
 def _annealing(
@@ -76,7 +90,7 @@ def _annealing(
     raise ValueError(f"'{annealing}' annealing is not supported")
 
 
-def annealing_with_warm_up(
+def _annealing_with_warm_up(
     annealing: str,
     /,
     T_curr: float,
@@ -107,6 +121,12 @@ def annealing_with_warm_up(
 # class interface
 
 
+Optimizer = torch.optim.Optimizer
+
+
+LRScheduler = torch.optim.lr_scheduler.LRScheduler
+
+
 class _enable_get_lr_call:
     def __init__(self, obj):
         self.obj = obj
@@ -120,7 +140,7 @@ class _enable_get_lr_call:
         return self
 
 
-class AnnealingWithWarmup(torch.optim.lr_scheduler.LRScheduler):
+class AnnealingWithWarmup(LRScheduler):
     """Annealing learning rate scheduler with warmup."""
 
     def __init__(
@@ -154,7 +174,7 @@ class AnnealingWithWarmup(torch.optim.lr_scheduler.LRScheduler):
                 "to get the last learning rate computed by the scheduler, please call method `get_last_lr()`"
             )
         return [
-            annealing_with_warm_up(
+            _annealing_with_warm_up(
                 self.annealing,
                 self.T_curr,
                 base_lr,
@@ -196,7 +216,7 @@ class AnnealingWithWarmup(torch.optim.lr_scheduler.LRScheduler):
         self._last_lr = [group["lr"] for group in self.optimizer.param_groups]
 
 
-class AnnealingWithWarmRestarts(torch.optim.lr_scheduler.LRScheduler):
+class AnnealingWithWarmRestarts(LRScheduler):
     """Annealing learning rate scheduler with warm restarts.
 
     References:

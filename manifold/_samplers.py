@@ -6,14 +6,9 @@ import torch
 from manifold.decorators import timeit
 
 __all__ = (
-    "sample",
-    "neighbor",
     "neighbor_loader",
-    "get_neighbor_loader",
     "neighbor_sampler",
-    "get_neighbor_sampler",
     "batch_neighbor_sampler",
-    "get_batch_neighbor_sampler",
     "DataLoader",
     "Sampler",
 )
@@ -23,18 +18,14 @@ __all__ = (
 
 
 @timeit
-def random_permutation(
-    n: int,
+def permutation(
+    num_samples: int,
     generator: Optional[torch.Generator] = None,
     device: Optional[torch.device] = None,
 ) -> torch.Tensor:
-    """Returns a 1D tensor containing a random permutation of integers from `0`
-    to `n - 1`.
-    """
     # fixme: speed up permutation
     return torch.randperm(
-        n,
-        # expect device for generator to be desired device
+        num_samples,
         generator=generator,
         dtype=torch.int64,
         device=device,
@@ -46,15 +37,9 @@ def combinations(
     input: torch.Tensor,
     num_samples: int,
 ) -> torch.Tensor:
-    """Returns a 2D tensor where each row contains `num_samples` indices sampled
-    from all the combinations of length `num_samples` of the corresponding row
-    of tensor `input` without replacement.
-    """
     # fixme: speed up conmbinations
-    # expect input to be a 2D tensor
     if num_samples == 1:
-        # return input.view(1, -1).T
-        return input.reshape(1, -1).T
+        return input.view(1, -1).T
     if num_samples == input.shape[1]:
         return input
     output = []
@@ -65,15 +50,23 @@ def combinations(
     return torch.vstack(output)
 
 
+def _combinations(input: torch.Tensor, k: int) -> torch.Tensor:
+    size = list(input.size())
+    n = size[-1]
+    size[-1] = num_combinations(n, k)
+    size.append(k)
+    output = []
+    for i in input.view(-1, n):
+        output.append(torch.combinations(i, k, with_replacement=False))
+    output = torch.stack(output)
+    return output.view(*size)
+
+
 def num_combinations(n: int, k: int) -> int:
-    """Returns the number of combinations of length `k` of `n` samples without
-    replacement.
-    """
     if k == 1:
         return n
     if k == n:
         return 1
-    # expect 1 < k < n
     return math.comb(n, k)
 
 
@@ -83,122 +76,43 @@ def multinomial(
     num_samples: int,
     replacement: bool = False,
     generator: Optional[torch.Generator] = None,
-) -> torch.Tensor:
-    """Returns a 2D tensor where each row contains `num_samples` indices sampled
-    from the multinomial probability distribution located in the corresponding
-    row of tensor `input`.
-    """
+):
     # fixme: speed up multinomial
+    # https://github.com/pytorch/pytorch/pull/55364
     return torch.multinomial(
-        # expect input to be a 2D tensor
         input.to(dtype=torch.float64),
         num_samples,
         replacement,
-        # expect device for generator to be the same as input
         generator=generator,
     )
-
-
-@timeit
-def sample(
-    n: int,
-    size: int,
-    num_samples: int,
-    safe_n: int = 10000,
-    safe_size: int = 1024,
-    rejection: Optional[torch.Tensor] = None,
-    replacement: bool = False,
-    generator: Optional[torch.Generator] = None,
-    device: Optional[torch.device] = None,
-) -> torch.Tensor:
-    """Returns a 2D tensor where each row contains `num_samples` indices sampled
-    from `0` to `n - 1`.
-    """
-    if rejection is None and replacement:
-        return torch.randint(
-            n,
-            (size, num_samples),
-            dtype=torch.int64,
-            generator=generator,
-            device=device,
-        )
-    # optimize memory usage, becoming high CPU usage, or CPU-bound
-    if n > safe_n and size > safe_size:
-        samples = []
-        reminder = size % safe_size
-        last_batch_size = reminder if reminder > 0 else safe_size
-        for i in range(0, size, safe_size):
-            # handle last batch whatever it is complete or not
-            if i == size - last_batch_size:
-                batch_size = last_batch_size
-            else:
-                batch_size = safe_size
-            samples.append(
-                multinomial(
-                    # expect device for mask to be desired device
-                    _sampling_mask(
-                        n,
-                        batch_size,
-                        rejection=rejection[i : i + batch_size],
-                        device=device,
-                    ),
-                    num_samples,
-                    replacement=replacement,
-                    # expect device for generator to be desired device
-                    generator=generator,
-                )
-            )
-        return torch.vstack(samples)
-    return multinomial(
-        # expect device for mask to be desired device
-        _sampling_mask(
-            n,
-            size,
-            rejection=rejection,
-            device=device,
-        ),
-        num_samples,
-        replacement=replacement,
-        # expect device for generator to be desired device
-        generator=generator,
-    )
-
-
-def _sampling_mask(
-    n: int,
-    size: int,
-    rejection: Optional[torch.Tensor] = None,
-    device: Optional[torch.device] = None,
-) -> torch.Tensor:
-    # fixme: high memory usage, or memory-bound for large n and size
-    mask = torch.ones(
-        size,
-        n,
-        dtype=torch.bool,
-        device=device,
-    )
-    if rejection is not None:
-        return mask.scatter(
-            dim=1,
-            index=rejection.to(device=mask.device),
-            value=False,
-        )
-    return mask
-
-
-def repeat(samples: torch.Tensor, repeats: int) -> torch.Tensor:
-    return samples.expand(-1, repeats).reshape(-1, 1)
 
 
 def neighbor(samples: Sequence[torch.Tensor]) -> torch.Tensor:
     return torch.hstack(samples)
 
 
+def repeat(samples: torch.Tensor, repeats: int) -> torch.Tensor:
+    return samples.expand(-1, repeats).reshape(-1, 1)
+
+
+def _validate_neighbor_or_neighboring_samples(samples: torch.Tensor) -> None:
+    if samples.dtype != torch.int64:
+        raise RuntimeError(
+            f"expected 'torch.int64' data type but found '{samples.dtype}'"
+        )
+    if samples.dim() != 2:
+        raise RuntimeError(f"expected 2D but found {samples.dim()}D")
+
+
+def _validate_num_positive_samples(num_positive_samples: int) -> None:
+    if num_positive_samples <= 0:
+        raise ValueError("'num_positive_samples' must be a positive integer")
+
+
 def _num_positive_samples(
     num_positive_samples: int,
     max_positive_samples: int,
 ) -> int:
-    # expect num_positive_samples to be a positive integer
     return min(num_positive_samples, max_positive_samples)
 
 
@@ -206,14 +120,19 @@ def _max_positive_samples(num_neighbors: int) -> int:
     return num_neighbors
 
 
+def _validate_num_negative_samples(num_negative_samples: int) -> None:
+    if num_negative_samples <= 0:
+        raise ValueError("'num_negative_samples' must be a positive integer")
+
+
 def _num_negative_samples(
     num_negative_samples: int,
     max_negative_samples: int,
 ) -> int:
-    # expect num_negative_samples to be a positive integer
     return min(num_negative_samples, max_negative_samples)
 
 
+@timeit
 def _max_negative_samples(
     num_samples: int,
     exclude_anchor_samples: bool = False,
@@ -258,17 +177,39 @@ def _excluded_indices(
         return None
     # only excluding anchor samples
     if exclude_anchor_samples and (not exclude_positive_samples):
-        # expect anchor_samples to be a torch.int64 tensor
+        # expect anchor_samples have dtype, torch.int64
         return anchor_samples
     # excluding anchor samples and all chosen positive samples
     if not exclude_neighbors:
-        # expect anchor_samples and positive_samples to be torch.int64 tensors with the same device, length
+        # expect anchor_samples and positive_samples have the same dtype, torch.int64, device, length
         return neighbor((anchor_samples, positive_samples))
     # excluding anchor samples and all candidates for positive samples
-    # expect anchor_samples and neighbor_indices to be torch.int64 tensors with the same device, length
+    # expect anchor_samples and neighbor_indices have the same dtype, torch.int64, device, length
     return neighbor((anchor_samples, neighbor_indices))
 
 
+def _sampling_mask(
+    batch_size: int,
+    num_samples: int,
+    excluded_indices: Optional[torch.Tensor] = None,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    mask = torch.ones(
+        batch_size,
+        num_samples,
+        dtype=torch.bool,
+        device=device,
+    )
+    if excluded_indices is not None:
+        return mask.scatter(
+            dim=1,
+            index=excluded_indices.to(device=mask.device),
+            value=False,
+        )
+    return mask
+
+
+@timeit
 def _negative_sampling_mask(
     batch_size: int,
     num_samples: int,
@@ -388,6 +329,8 @@ def anchor_samples(
         - Input: (n, n_neighbors), where n is the total number of samples and n_neighbors is the number of nearest neighbors.
         - Output: (c_positives * n, 1), where c_positives is the number of combinations to draw positive samples for each anchor sample from nearest neighbors without replacement and without order.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples)
     num_samples, num_neighbors = neighbor_indices.shape
     return _anchor_samples(
         num_samples,
@@ -428,6 +371,7 @@ def max_positive_samples(
     Returns:
         int: Maximum number of positive samples can be drawn.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
     _, num_neighbors = neighbor_indices.shape
     return _max_positive_samples(num_neighbors)
 
@@ -446,6 +390,8 @@ def num_positive_samples(
     Returns:
         int: Number of positive samples to draw.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples_)
     _, num_neighbors = neighbor_indices.shape
     return _num_positive_samples(
         num_positive_samples_,
@@ -467,6 +413,8 @@ def comb_positive_samples(
     Returns:
         int: Number of combinations to draw positive samples.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples)
     _, num_neighbors = neighbor_indices.shape
     return _comb_positive_samples(
         num_neighbors,
@@ -504,6 +452,8 @@ def positive_samples(
         - Input: (n, n_neighbors), where n is the total number of samples and n_neighbors is the number of nearest neighbors.
         - Output: (c_positives * n, n_positives), where c_positives is the number of combinations to draw positive samples for each anchor sample from nearest neighbors without replacement and without order, and n_positives is the number of positive samples to draw for each anchor sample.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples)
     _, num_neighbors = neighbor_indices.shape
     return _positive_samples(
         neighbor_indices,
@@ -547,6 +497,8 @@ def max_negative_samples(
     Returns:
         int: Maximum number of negative samples can be drawn.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples)
     num_samples, num_neighbors = neighbor_indices.shape
     return _max_negative_samples(
         num_samples,
@@ -583,6 +535,9 @@ def num_negative_samples(
     Returns:
         int: Number of negative samples to draw.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples_)
     num_samples, num_neighbors = neighbor_indices.shape
     return _num_negative_samples(
         num_negative_samples_,
@@ -626,6 +581,8 @@ def negative_sampling_mask(
         - Input: (n, n_neighbors), where n is the total number of samples and n_neighbors is the number of nearest neighbors.
         - Output: (c_positives * n, n), where c_positives is the number of combinations to draw positive samples for each anchor sample from nearest neighbors without replacement and without order.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples)
     num_samples, num_neighbors = neighbor_indices.shape
     num_positive_samples = _num_positive_samples(
         num_positive_samples,
@@ -691,6 +648,9 @@ def negative_samples(
         - Input: (n, n_neighbors), where n is the total number of samples and n_neighbors is the number of nearest neighbors.
         - Output: (c_positives * n, n_negatives), where c_positives is the number of combinations to draw positive samples for each anchor sample from nearest neighbors without replacement and without order, and n_negatives is the number of negative samples to draw for each anchor sample.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     num_samples, num_neighbors = neighbor_indices.shape
     num_positive_samples = _num_positive_samples(
         num_positive_samples,
@@ -768,6 +728,9 @@ def neighbor_sampling_mask(
         - Input: (n, n_neighbors), where n is the total number of samples and n_neighbors is the number of nearest neighbors.
         - Output: (c_positives * n, n_positives + n_negatives), where c_positives is the number of combinations to draw positive samples for each anchor sample from nearest neighbors without replacement and without order, n_positives is the number of positive samples to draw for each anchor sample, and n_negatives is the number of negative samples to draw for each anchor sample.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     num_samples, num_neighbors = neighbor_indices.shape
     num_positive_samples = _num_positive_samples(
         num_positive_samples,
@@ -828,6 +791,9 @@ def neighbor_samples(
         - Input: (n, n_neighbors), where n is the total number of samples and n_neighbors is the number of nearest neighbors.
         - Output: (c_positives * n, n_positives + n_negatives), where c_positives is the number of combinations to draw positive samples for each anchor sample from nearest neighbors without replacement and without order, n_positives is the number of positive samples to draw for each anchor sample, and n_negatives is the number of negative samples to draw for each anchor sample.
     """
+    _validate_neighbor_or_neighboring_samples(neighbor_indices)
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     num_samples, num_neighbors = neighbor_indices.shape
     num_positive_samples = _num_positive_samples(
         num_positive_samples,
@@ -903,6 +869,7 @@ def batch_anchor_samples(
         - Input: (B, 1 + n_positives), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch.
         - Output: (B, 1)
     """
+    _validate_neighbor_or_neighboring_samples(neighboring_samples)
     return _batch_anchor_samples(
         neighboring_samples,
         # force using desired device
@@ -940,6 +907,8 @@ def batch_positive_samples(
         - Input: (B, 1 + n_positives), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch.
         - Output: (B, n_positives)
     """
+    _validate_neighbor_or_neighboring_samples(neighboring_samples)
+    _validate_num_positive_samples(num_positive_samples)
     return _batch_positive_samples(
         neighboring_samples,
         num_positive_samples,
@@ -979,6 +948,7 @@ def batch_max_negative_samples(
     Returns:
         int: Maximum number of negative samples can be drawn.
     """
+    _validate_num_positive_samples(num_positive_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for batch negative sampling is not supported"
@@ -1013,6 +983,8 @@ def batch_num_negative_samples(
     Returns:
         int: Number of negative samples to draw.
     """
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for batch negative sampling is not supported"
@@ -1056,6 +1028,8 @@ def batch_negative_sampling_mask(
         - Input: (B, 1 + n_positives), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch.
         - Output: (B, n), where n is the total number of samples.
     """
+    _validate_neighbor_or_neighboring_samples(neighboring_samples)
+    _validate_num_positive_samples(num_positive_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for batch negative sampling is not supported"
@@ -1107,6 +1081,9 @@ def batch_negative_samples(
         - Input: (B, 1 + n_positives), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch.
         - Output: (B, n_negatives), where n_negatives is the number of negative samples to draw for each anchor sample in the batch.
     """
+    _validate_neighbor_or_neighboring_samples(neighboring_samples)
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     if num_samples is None:
         return _batch_negative_samples(
             neighboring_samples,
@@ -1188,6 +1165,9 @@ def batch_neighbor_sampling_mask(
     Shape:
         - Output: (B, n_positives + n_negatives), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch, and n_negatives is the number of negative samples to draw for each anchor sample in the batch.
     """
+    _validate_neighbor_or_neighboring_samples(neighboring_samples)
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for batch negative sampling is not supported"
@@ -1244,6 +1224,9 @@ def batch_neighbor_samples(
         - Input: (B, 1 + n_positives), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch.
         - Output: (B, n_positives + n_negatives), where n_negatives is the number of negative samples to draw for each anchor sample in the batch.
     """
+    _validate_neighbor_or_neighboring_samples(neighboring_samples)
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for batch negative sampling is not supported"
@@ -1356,6 +1339,7 @@ def in_batch_positive_samples(
     Shape:
         - Output: (n_positives * B, 1), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch.
     """
+    _validate_num_positive_samples(num_positive_samples)
     return _in_batch_positive_samples(
         batch_size,
         num_positive_samples,
@@ -1401,6 +1385,7 @@ def in_batch_max_negative_samples(
     Returns:
         int: Maximum number of negative samples can be drawn.
     """
+    _validate_num_positive_samples(num_positive_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for in-batch negative sampling is not supported"
@@ -1435,6 +1420,8 @@ def in_batch_num_negative_samples(
     Returns:
         int: Number of negative samples to draw.
     """
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for in-batch negative sampling is not supported"
@@ -1475,6 +1462,7 @@ def in_batch_negative_sampling_mask(
     Shape:
         - Output: (B, (1 + n_positives) * B), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch.
     """
+    _validate_num_positive_samples(num_positive_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for in-batch negative sampling is not supported"
@@ -1549,6 +1537,8 @@ def in_batch_negative_samples(
     Shape:
         - Output: (B, n_negatives), where B is the batch size, n_negatives is the number of negative samples to draw for each anchor sample in the batch.
     """
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for in-batch negative sampling is not supported"
@@ -1604,6 +1594,8 @@ def in_batch_neighbor_sampling_mask(
     Shape:
         - Output: (B, n_positives + n_negatives), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch, and n_negatives is the number of negative samples to draw for each anchor sample in the batch.
     """
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for in-batch negative sampling is not supported"
@@ -1656,6 +1648,8 @@ def in_batch_neighbor_samples(
     Shape:
         - Output: (B, n_positives + n_negatives), where B is the batch size, n_positives is the number of chosen positive samples for each anchor sample in the batch, and n_negatives is the number of negative samples to draw for each anchor sample in the batch.
     """
+    _validate_num_positive_samples(num_positive_samples)
+    _validate_num_negative_samples(num_negative_samples)
     if exclude_neighbors:
         raise NotImplementedError(
             "the case where nearest neighbors are excluded for in-batch negative sampling is not supported"
@@ -1694,32 +1688,21 @@ def in_batch_neighbor_samples(
     )
 
 
-def neighbor_loader(
-    neighboring_samples: torch.Tensor,
-    /,
-    **kwargs,
-) -> "NeighborLoader":
-    """Returns a `manifold.samplers.NeighborLoader`."""
-    return NeighborLoader(neighboring_samples, **kwargs)
-
-
-get_neighbor_loader = neighbor_loader
+def neighbor_loader(*args, **kwargs) -> "NeighborLoader":
+    return NeighborLoader(*args, **kwargs)
 
 
 def neighbor_sampler(
     num_positive_samples: int,
-    num_negative_samples: Optional[int] = None,
+    num_negative_samples: int,
     force_resampling: bool = False,
     exclude_anchor_samples: bool = False,
     exclude_positive_samples: bool = False,
     exclude_neighbors: bool = False,
-    repeat: int = 1,
     replacement: bool = False,
     generator: Optional[torch.Generator] = None,
     device: Optional[torch.device] = None,
 ) -> "NeighborSampler":
-    """Returns a `manifold.samplers.NeighborSampler`."""
-    # negative sampling will be performed in each batch, parameters for negative sampling are thus ignored
     if force_resampling:
         return NeighborSampler(
             num_positive_samples,
@@ -1738,9 +1721,6 @@ def neighbor_sampler(
     )
 
 
-get_neighbor_sampler = neighbor_sampler
-
-
 def batch_neighbor_sampler(
     num_positive_samples: int,
     num_negative_samples: int,
@@ -1753,9 +1733,7 @@ def batch_neighbor_sampler(
     generator: Optional[torch.Generator] = None,
     device: Optional[torch.device] = None,
 ) -> "BatchNeighborSampler":
-    """Returns a `manifold.samplers.BatchNeighborSampler`."""
     if force_resampling:
-        # perform in-batch negative sampling in a batch
         if in_batch:
             return InBatchNeighborSampler(
                 num_positive_samples,
@@ -1767,7 +1745,6 @@ def batch_neighbor_sampler(
                 generator=generator,
                 device=device,
             )
-        # perform negative sampling in a batch
         return BatchNeighborSampler(
             num_positive_samples,
             num_negative_samples,
@@ -1778,15 +1755,12 @@ def batch_neighbor_sampler(
             generator=generator,
             device=device,
         )
-    # perform negative sampling by slicing each batch, parameters for negative sampling are thus ignored
+    # 'perform' negative sampling by slicing
     return BatchNeighborSampler(
         num_positive_samples,
         num_negative_samples,
         device=device,
     )
-
-
-get_batch_neighbor_sampler = batch_neighbor_sampler
 
 
 # class interface
@@ -1838,24 +1812,16 @@ class NeighborLoader(DataLoader[torch.Tensor]):
         generator: Optional[torch.Generator] = None,
         device: Optional[torch.device] = None,
     ) -> None:
-        # expect neighboring_samples to be a 2D, torch.int64 tensor
+        _validate_neighbor_or_neighboring_samples(neighboring_samples)
         super().__init__()
-        # expect device for samples to be desired device
-        if device is None:
-            self.samples = neighboring_samples
-            self.device = neighboring_samples.device
-        # force using desired device for samples
-        else:
-            self.samples = neighboring_samples.to(device=device)
-            self.device = device
         self.num_samples, _ = neighboring_samples.shape
-        # batch gradient descent will be used
+        # for batch stochastic gradient descent
         if batch_size is None or batch_size >= self.num_samples:
             self.batch_size = self.num_samples
             self.last_batch_size = self.num_samples
             self.drop_last = False
             self.num_batches = 1
-        # mini-batch stochastic gradient descent will be used
+        # for mini-batch stochastic gradient descent
         else:
             self.batch_size = batch_size
             self.last_batch_size = batch_size
@@ -1865,12 +1831,14 @@ class NeighborLoader(DataLoader[torch.Tensor]):
                 self.last_batch_size = remainder
                 self.num_batches += 1
         self.shuffle = shuffle
-        # force using desired device for generator
-        if generator is None:
-            self.generator = torch.Generator(device)
-        # expect device for generator to be desired device
+        self.generator = generator
+        if device is None:
+            self.samples = neighboring_samples
+            self.device = neighboring_samples.device
         else:
-            self.generator = generator
+            # force using desired device
+            self.samples = neighboring_samples.to(device=device)
+            self.device = device
 
     def __len__(self) -> int:
         return self.num_batches
@@ -1878,7 +1846,7 @@ class NeighborLoader(DataLoader[torch.Tensor]):
     def __iter__(self) -> "NeighborLoader[torch.Tensor]":
         # sample batch randomly
         if self.shuffle:
-            self._indices = random_permutation(
+            self._indices = permutation(
                 self.num_samples,
                 # expect device for generator to be desired device
                 generator=self.generator,
@@ -1905,7 +1873,6 @@ class NeighborLoader(DataLoader[torch.Tensor]):
             batch = self.samples[self._index : next_index]
         # update index pointer
         self._index = next_index
-        # expect device for batch to be desired device
         return batch
 
 
@@ -1923,8 +1890,9 @@ class NeighborSampler(Sampler[torch.Tensor]):
         generator: Optional[torch.Generator] = None,
         device: Optional[torch.device] = None,
     ) -> None:
-        # expect num_positive_samples > 0
-        # expect num_negative_samples >= 0
+        _validate_num_positive_samples(num_positive_samples)
+        if num_negative_samples is not None:
+            _validate_num_negative_samples(num_negative_samples)
         super().__init__()
         self._num_positive_samples = num_positive_samples
         self._num_negative_samples = num_negative_samples
@@ -1939,11 +1907,9 @@ class NeighborSampler(Sampler[torch.Tensor]):
         self,
         neighbor_indices: torch.Tensor,
         /,
-        labels: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # expect neighbor_indices to be a 2D, torch.int64 tensor
+        _validate_neighbor_or_neighboring_samples(neighbor_indices)
         self._samples = neighbor_indices
-        self._labels = labels
         num_samples, num_neighbors = neighbor_indices.shape
         self._max_positive_samples = _max_positive_samples(num_neighbors)
         self._comb_positive_samples = _comb_positive_samples(
@@ -1953,20 +1919,17 @@ class NeighborSampler(Sampler[torch.Tensor]):
         self._anchor_samples = _anchor_samples(
             num_samples,
             self._comb_positive_samples,
-            # force using desired device for anchor samples
+            # force using desired device
             self.device,
         )
         self._positive_samples = _positive_samples(
             neighbor_indices,
             self.num_positive_samples,
-            # force using desired device for positive samples
+            # force using desired device
             self.device,
         )
-        # perform negative sampling first
-        if (
-            self._num_negative_samples is not None
-            and self._num_negative_samples > 0
-        ):
+        # negative sampling
+        if self._num_negative_samples is not None:
             self._max_negative_samples = _max_negative_samples(
                 num_samples,
                 self.exclude_anchor_samples,
@@ -1975,78 +1938,54 @@ class NeighborSampler(Sampler[torch.Tensor]):
                 self.exclude_neighbors,
                 num_neighbors,
             )
-            # fixme: negative sampling mask is not supported
-            self._negative_sampling_mask = None
-            self._negative_samples = sample(
-                num_samples,
+            self._negative_sampling_mask = _negative_sampling_mask(
                 self._comb_positive_samples * num_samples,
-                self.num_negative_samples,
-                rejection=_excluded_indices(
-                    self.exclude_anchor_samples,
-                    self._anchor_samples,
-                    self.exclude_positive_samples,
-                    self._positive_samples,
-                    self.exclude_neighbors,
-                    _neighbor_indices(
-                        neighbor_indices,
-                        self._comb_positive_samples,
-                    ),
+                num_samples,
+                self.exclude_anchor_samples,
+                self._anchor_samples,
+                self.exclude_positive_samples,
+                self._positive_samples,
+                self.exclude_neighbors,
+                _neighbor_indices(
+                    neighbor_indices,
+                    self._comb_positive_samples,
                 ),
+                # force using desired device
+                self.device,
+            )
+            self._negative_samples = multinomial(
+                self._negative_sampling_mask,
+                self.num_negative_samples,
                 replacement=self.replacement,
+                # expect device for generator to be desired device
                 generator=self.generator,
-                device=self.device,
+            )
+            self._neighbor_sampling_mask = _neighbor_sampling_mask(
+                self._comb_positive_samples * num_samples,
+                self.num_positive_samples,
+                self.num_negative_samples,
+                # force using desired device
+                self.device,
             )
             self._neighbor_samples = neighbor(
                 (self._positive_samples, self._negative_samples)
             )
-            if labels is None:
-                self._neighbor_sampling_mask = _neighbor_sampling_mask(
-                    self._comb_positive_samples * num_samples,
-                    self.num_positive_samples,
-                    self.num_negative_samples,
-                    # force using desired device
-                    self.device,
-                )
-            # fixme: easy but number of positive samples and number of negative samples will be affected
-            else:
-                # expect labels to be a 1D, torch.int64 tensor
-                self._neighbor_sampling_mask = (
-                    labels[self._neighbor_samples]
-                    == labels[self._anchor_samples]
-                )
-                self._num_positive_samples = self._neighbor_sampling_mask.sum(
-                    dim=1
-                )
-                print(
-                    "number of positives for each anchor: mean {mean}, min {min}, max {max}".format(
-                        mean=self._num_positive_samples.mean().cpu().item(),
-                        min=self._num_positive_samples.min().cpu().item(),
-                        max=self._num_positive_samples.max().cpu().item(),
-                    )
-                )
-                self._num_positive_samples = (
-                    self._num_positive_samples.mean().cpu().item()
-                )
-        # negative sampling will be performed in each batch, parameters for negative sampling are thus ignored
         else:
-            if labels is not None:
-                raise NotImplementedError(
-                    "negative sampling will be performed in each batch, supervised setup is not supported here"
-                )
             self._max_negative_samples = None
             self._negative_sampling_mask = None
             self._negative_samples = None
-            self._neighbor_samples = self._positive_samples
             self._neighbor_sampling_mask = None
+            self._neighbor_samples = self._positive_samples
         return neighbor((self._anchor_samples, self._neighbor_samples))
 
     @property
     def device(self) -> torch.device:
-        # expect device for samples to be desired device
-        if hasattr(self, "_samples") and self._device is None:
-            return self._samples.device
-        # force using desired device
-        return self._device
+        if hasattr(self, "_samples"):
+            return (
+                self._samples.device if self._device is None else self._device
+            )
+        else:
+            return self._device
 
     @property
     def max_positive_samples(self) -> int:
@@ -2154,12 +2093,11 @@ class BatchNeighborSampler(NeighborSampler):
         self,
         neighboring_samples: torch.Tensor,
         num_samples: Optional[int] = None,
-        labels: Optional[torch.Tensor] = None,
         /,
         force_resampling: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        _validate_neighbor_or_neighboring_samples(neighboring_samples)
         self._samples = neighboring_samples
-        self._labels = labels
         self._max_postive_samples = None
         batch_size, _ = neighboring_samples.shape
         self._anchor_samples = _batch_anchor_samples(
@@ -2217,33 +2155,15 @@ class BatchNeighborSampler(NeighborSampler):
                 # expect device for generator to be desired device
                 generator=self.generator,
             )
-        if labels is None:
-            # update batch size dependent only properties
-            if batch_size != self._batch_size and labels is None:
-                self._batch_size = batch_size
-                self._neighbor_sampling_mask = _neighbor_sampling_mask(
-                    self._comb_positive_samples * num_samples,
-                    self.num_positive_samples,
-                    self.num_negative_samples,
-                    # force using desired device
-                    self.device,
-                )
-        # fixme: number of positive samples and number of negative samples will be affected
-        else:
-            # expect labels to be a 1D, torch.int64 tensor
-            self._neighbor_sampling_mask = (
-                labels[self._neighbor_samples] == labels[self._anchor_samples]
-            )
-            self._num_positive_samples = self._neighbor_sampling_mask.sum(dim=1)
-            print(
-                "number of positives for each anchor: mean {mean}, min {min}, max {max}".format(
-                    mean=self._num_positive_samples.mean().cpu().item(),
-                    min=self._num_positive_samples.min().cpu().item(),
-                    max=self._num_positive_samples.max().cpu().item(),
-                )
-            )
-            self._num_positive_samples = (
-                self._num_positive_samples.mean().cpu().item()
+        # update batch size dependent only properties
+        if batch_size != self._batch_size:
+            self._batch_size = batch_size
+            self._neighbor_sampling_mask = _neighbor_sampling_mask(
+                batch_size,
+                self.num_positive_samples,
+                self.num_negative_samples,
+                # force using desired device
+                self.device,
             )
         self._neighbor_samples = neighbor(
             (self._positive_samples, self._negative_samples)
@@ -2287,12 +2207,11 @@ class InBatchNeighborSampler(BatchNeighborSampler):
         self,
         neighboring_samples: torch.Tensor,
         num_samples: Optional[int] = None,
-        labels: Optional[torch.Tensor] = None,
         /,
         force_resampling: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        _validate_neighbor_or_neighboring_samples(neighboring_samples)
         self._samples = neighboring_samples
-        self._labels = labels
         self._max_positive_samples = None
         batch_size, _ = neighboring_samples.shape
         # update batch size dependent only properties
@@ -2329,14 +2248,13 @@ class InBatchNeighborSampler(BatchNeighborSampler):
                 # force using desired device
                 self.device,
             )
-            if labels is None:
-                self._neighboring_sampling_mask = _neighbor_sampling_mask(
-                    batch_size,
-                    self.num_positive_samples,
-                    self.num_negative_samples,
-                    # force using desired device
-                    self.device,
-                )
+            self._neighboring_sampling_mask = _neighbor_sampling_mask(
+                batch_size,
+                self.num_positive_samples,
+                self.num_negative_samples,
+                # force using desired device
+                self.device,
+            )
             sampled = False
         # always implictly force resampling even `force_resampling` is False as long as dataloader is shuffled
         if (not sampled) or force_resampling:

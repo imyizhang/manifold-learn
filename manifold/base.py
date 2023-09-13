@@ -1,22 +1,21 @@
 from typing import Optional
 
-import torch
 import numpy
+import torch
 
 
 class Estimator(torch.nn.Module):
-
     def __init__(self) -> None:
         super().__init__()
 
     def forward(self):
-        raise
+        raise NotImplementedError
 
     def fit(
         self,
         X: torch.Tensor,
         y: Optional[torch.Tensor] = None,
-    ) -> 'Estimator':
+    ) -> "Estimator":
         """Fit the model with X."""
         return self
 
@@ -54,7 +53,6 @@ class Estimator(torch.nn.Module):
 
 
 class Wrapper(object):
-
     def __init__(self, estimator: Estimator) -> None:
         self.estimator = estimator
 
@@ -62,7 +60,7 @@ class Wrapper(object):
         self,
         X: numpy.ndarray,
         y: Optional[numpy.ndarray] = None,
-    ) -> 'Wrapper':
+    ) -> "Wrapper":
         """Fit the model with X."""
         X = torch.from_numpy(X)
         if y is not None:
@@ -98,8 +96,12 @@ class Wrapper(object):
         X = torch.from_numpy(X)
         if y is not None:
             y = torch.from_numpy(y)
-        return self.estimator.fit_transform(
-            X, y=y, **fit_params).detach().cpu().numpy()
+        return (
+            self.estimator.fit_transform(X, y=y, **fit_params)
+            .detach()
+            .cpu()
+            .numpy()
+        )
 
     def transform(self, X: numpy.ndarray) -> numpy.ndarray:
         """Apply dimensionality reduction to X."""
